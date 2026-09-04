@@ -81,9 +81,9 @@ npm run dist:win
 
 产物位于 `release/`：
 
-- macOS：DMG、ZIP
-- Windows：NSIS（x64、arm64）
-- Linux：AppImage、deb
+- macOS：DMG（`.dmg`）
+- Windows：NSIS 安装程序（`.exe`，x64、arm64）
+- Linux：Debian 安装包（`.deb`）
 
 通常应在目标操作系统上构建该平台安装包。正式分发 macOS 和 Windows 安装包前，还需要配置对应平台的代码签名。
 
