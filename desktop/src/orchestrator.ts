@@ -119,6 +119,7 @@ export class Orchestrator {
       status: 'cancelled',
       finished_at: new Date().toISOString(),
     })
+    if (child) this.running.delete(taskId)
     child?.kill()
     this.publish(taskId, 'info', 'Cancellation requested')
     return this.requireTask(taskId)
@@ -202,15 +203,17 @@ export class Orchestrator {
         throw new Error('Agent process did not provide output streams')
       }
       this.running.set(task.id, child)
-      this.consume(task.id, child.stdout, 'output')
-      this.consume(task.id, child.stderr, 'error')
+      const isCurrentRun = () => this.running.get(task.id) === child
+      this.consume(task.id, child.stdout, 'output', isCurrentRun)
+      this.consume(task.id, child.stderr, 'error', isCurrentRun)
       let settled = false
       child.once('error', (error) => {
+        if (settled || this.stopping || !isCurrentRun()) return
         settled = true
-        this.fail(task.id, error.message)
+        this.fail(task.id, error.message, null, child)
       })
       child.once('close', (exitCode) => {
-        if (settled || this.stopping) return
+        if (settled || this.stopping || !isCurrentRun()) return
         settled = true
         this.running.delete(task.id)
         const current = this.store.getTask(task.id)
@@ -236,10 +239,11 @@ export class Orchestrator {
     taskId: string,
     stream: NodeJS.ReadableStream,
     level: 'output' | 'error',
+    isCurrentRun: () => boolean,
   ): void {
     const lines = readline.createInterface({ input: stream })
     lines.on('line', (message) => {
-      if (this.stopping) return
+      if (this.stopping || !isCurrentRun()) return
       this.store.appendTaskOutput(taskId, level, `${message}\n`)
       this.publish(taskId, level, message)
     })
@@ -295,8 +299,14 @@ export class Orchestrator {
     })
   }
 
-  private fail(taskId: string, message: string, exitCode: number | null = null): void {
+  private fail(
+    taskId: string,
+    message: string,
+    exitCode: number | null = null,
+    child?: ChildProcess,
+  ): void {
     if (this.stopping) return
+    if (child && this.running.get(taskId) !== child) return
     const current = this.store.getTask(taskId)
     if (!current || current.status === 'cancelled') return
     this.running.delete(taskId)

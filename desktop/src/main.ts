@@ -67,9 +67,10 @@ function registerIpc(): void {
     orchestrator.cancelTask(taskId),
   )
   ipcMain.handle('studio:events:list', () => store.listEvents())
-  ipcMain.handle('studio:paths:open', async (_event, targetPath: string) => {
-    const error = await shell.openPath(targetPath)
-    if (error) throw new Error(error)
+  ipcMain.handle('studio:paths:open', (_event, targetPath: string) => {
+    const resolvedPath = path.resolve(targetPath)
+    if (!existsSync(resolvedPath)) throw new Error('Path does not exist')
+    shell.showItemInFolder(resolvedPath)
   })
 }
 
