@@ -87,6 +87,8 @@ npm run dist:win
 
 通常应在目标操作系统上构建该平台安装包。正式分发 macOS 和 Windows 安装包前，还需要配置对应平台的代码签名。
 
+仓库的 `Build release installers` GitHub Actions 工作流可针对已有的草稿 Release，同时在三个目标系统构建并上传这些安装包。
+
 ## 架构
 
 ```text
