@@ -1,0 +1,93 @@
+{
+  "name": "multi-agent-studio",
+  "version": "0.1.0",
+  "description": "Cross-platform desktop workspace for orchestrating local coding agents",
+  "main": "desktop/dist/src/main.js",
+  "author": {
+    "name": "Multi-Agent Studio",
+    "email": "kebo3256@gmail.com"
+  },
+  "homepage": "https://github.com/keke4444",
+  "desktopName": "multi-agent-studio",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "postinstall": "electron-builder install-app-deps",
+    "dev": "concurrently -k \"npm run dev --prefix frontend\" \"npm run dev:desktop\"",
+    "dev:desktop": "wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
+    "start": "npm run build && electron .",
+    "build:renderer": "npm run build --prefix frontend",
+    "build:desktop": "tsc -p desktop/tsconfig.json",
+    "build": "npm run build:renderer && npm run build:desktop",
+    "test": "npm run build:desktop && cross-env ELECTRON_RUN_AS_NODE=1 electron --test desktop/dist/tests/*.test.js",
+    "lint": "npm run lint --prefix frontend && tsc -p desktop/tsconfig.json --noEmit",
+    "dist": "npm run build && electron-builder",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:linux": "npm run build && electron-builder --linux"
+  },
+  "dependencies": {
+    "better-sqlite3": "13.0.3",
+    "cross-spawn": "7.0.6"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
+    "@types/cross-spawn": "6.0.6",
+    "@types/node": "24.3.1",
+    "concurrently": "9.2.4",
+    "cross-env": "7.0.3",
+    "electron": "41.10.3",
+    "electron-builder": "26.15.3",
+    "typescript": "5.6.3",
+    "wait-on": "9.1.0"
+  },
+  "build": {
+    "appId": "ai.agentstudio.desktop",
+    "productName": "Multi-Agent Studio",
+    "asar": true,
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "desktop/dist/**/*",
+      "frontend/dist/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "category": "Development",
+      "syncDesktopName": true,
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
