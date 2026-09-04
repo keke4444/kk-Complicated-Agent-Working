@@ -1,0 +1,17 @@
+export const api = {
+  stats: () => window.studio.stats(),
+  agents: () => window.studio.agents(),
+  discoverAgents: () => window.studio.discoverAgents(),
+  createAgent: window.studio.createAgent,
+  projects: () => window.studio.projects(),
+  createProject: window.studio.createProject,
+  pickDirectory: () => window.studio.pickDirectory(),
+  tasks: (projectId?: string) => window.studio.tasks(projectId),
+  createTask: window.studio.createTask,
+  queueTask: window.studio.queueTask,
+  queueProject: window.studio.queueProject,
+  cancelTask: window.studio.cancelTask,
+  events: () => window.studio.events(),
+  openPath: window.studio.openPath,
+  onEvent: window.studio.onEvent,
+}
