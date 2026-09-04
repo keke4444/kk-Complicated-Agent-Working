@@ -24,9 +24,9 @@
     "test": "npm run build:desktop && cross-env ELECTRON_RUN_AS_NODE=1 electron --test desktop/dist/tests/*.test.js",
     "lint": "npm run lint --prefix frontend && tsc -p desktop/tsconfig.json --noEmit",
     "dist": "npm run build && electron-builder",
-    "dist:mac": "npm run build && electron-builder --mac",
-    "dist:win": "npm run build && electron-builder --win",
-    "dist:linux": "npm run build && electron-builder --linux"
+    "dist:mac": "npm run build && electron-builder --mac --publish never",
+    "dist:win": "npm run build && electron-builder --win --publish never",
+    "dist:linux": "npm run build && electron-builder --linux --publish never"
   },
   "dependencies": {
     "better-sqlite3": "13.0.3",
