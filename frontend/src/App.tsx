@@ -93,14 +93,37 @@ function App() {
     }
   }, [])
 
+  const refreshExecution = useCallback(async () => {
+    try {
+      const [nextStats, nextTasks] = await Promise.all([api.stats(), api.tasks()])
+      setStats(nextStats)
+      setTasks(nextTasks)
+      setSelectedTask((current) =>
+        current ? nextTasks.find((task) => task.id === current.id) ?? null : null,
+      )
+      setError('')
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : '无法同步任务状态')
+    }
+  }, [])
+
   useEffect(() => {
     void load()
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined
     const unsubscribe = api.onEvent((nextEvent) => {
       setEvents((current) => [...current.slice(-99), nextEvent])
-      void load()
+      if (!refreshTimer) {
+        refreshTimer = setTimeout(() => {
+          refreshTimer = undefined
+          void refreshExecution()
+        }, 200)
+      }
     })
-    return unsubscribe
-  }, [load])
+    return () => {
+      if (refreshTimer) clearTimeout(refreshTimer)
+      unsubscribe()
+    }
+  }, [load, refreshExecution])
 
   const currentProject = projects.find((project) => project.id === selectedProjectId)
   const projectTasks = tasks.filter((task) => task.project_id === selectedProjectId)

@@ -174,6 +174,7 @@ export class Orchestrator {
       const project = this.store.getProject(task.project_id)
       if (!project) throw new Error('Project not found')
       const { workspace, branch } = await this.prepareWorkspace(task, project.repo_path, project.use_worktrees)
+      if (this.store.getTask(task.id)?.status !== 'running') return
       this.store.updateTask(task.id, { workspace_path: workspace, branch_name: branch })
       const prompt = [
         task.prompt,
@@ -215,20 +216,11 @@ export class Orchestrator {
       child.once('close', (exitCode) => {
         if (settled || this.stopping || !isCurrentRun()) return
         settled = true
-        this.running.delete(task.id)
-        const current = this.store.getTask(task.id)
-        if (!current || current.status === 'cancelled') return
         if (exitCode === 0) {
-          this.store.updateTask(task.id, {
-            status: 'completed',
-            exit_code: 0,
-            finished_at: new Date().toISOString(),
-          })
-          this.publish(task.id, 'info', 'Task completed')
+          void this.completeTask(task.id, project.use_worktrees, child)
         } else {
           this.fail(task.id, `Agent exited with code ${exitCode ?? 'unknown'}`, exitCode)
         }
-        void this.schedule()
       })
     } catch (error) {
       this.fail(task.id, error instanceof Error ? error.message : String(error))
@@ -261,6 +253,13 @@ export class Orchestrator {
     const workspace = path.join(this.workspaceRoot, task.id)
     const branch = `agent/${task.id}`
     if (existsSync(workspace)) return { workspace, branch }
+    const dependencyBranches = task.depends_on.map((dependencyId) => {
+      const dependency = this.store.getTask(dependencyId)
+      if (!dependency?.branch_name) {
+        throw new Error(`Dependency branch is unavailable: ${dependencyId}`)
+      }
+      return dependency.branch_name
+    })
     const branchExists = await this.commandSucceeds('git', [
       '-C',
       repoPath,
@@ -271,8 +270,30 @@ export class Orchestrator {
     ])
     const args = branchExists
       ? ['-C', repoPath, 'worktree', 'add', workspace, branch]
-      : ['-C', repoPath, 'worktree', 'add', '-b', branch, workspace]
+      : [
+          '-C',
+          repoPath,
+          'worktree',
+          'add',
+          '-b',
+          branch,
+          workspace,
+          dependencyBranches[0] ?? 'HEAD',
+        ]
     await this.runCommand('git', args)
+    for (const dependencyBranch of dependencyBranches.slice(1)) {
+      await this.runCommand('git', [
+        '-C',
+        workspace,
+        '-c',
+        'user.name=Multi-Agent Studio',
+        '-c',
+        'user.email=multi-agent-studio@localhost',
+        'merge',
+        '--no-edit',
+        dependencyBranch,
+      ])
+    }
     return { workspace, branch }
   }
 
@@ -284,19 +305,75 @@ export class Orchestrator {
     })
   }
 
-  private runCommand(executable: string, args: string[]): Promise<void> {
+  private runCommand(executable: string, args: string[]): Promise<string> {
     return new Promise((resolve, reject) => {
       const child = spawn(executable, args, { windowsHide: true })
+      let output = ''
       let errorOutput = ''
+      child.stdout?.on('data', (chunk: Buffer) => {
+        output += chunk.toString()
+      })
       child.stderr?.on('data', (chunk: Buffer) => {
         errorOutput += chunk.toString()
       })
       child.once('error', reject)
       child.once('close', (exitCode) => {
-        if (exitCode === 0) resolve()
+        if (exitCode === 0) resolve(output)
         else reject(new Error(errorOutput.trim() || `${executable} exited with ${exitCode}`))
       })
     })
+  }
+
+  private async completeTask(
+    taskId: string,
+    useWorktrees: boolean,
+    child: ChildProcess,
+  ): Promise<void> {
+    if (this.stopping || this.running.get(taskId) !== child) return
+    const current = this.store.getTask(taskId)
+    if (!current || current.status !== 'running') return
+    try {
+      if (useWorktrees && current.workspace_path && current.branch_name) {
+        const changes = await this.runCommand('git', [
+          '-C',
+          current.workspace_path,
+          'status',
+          '--porcelain',
+        ])
+        if (changes.trim()) {
+          await this.runCommand('git', ['-C', current.workspace_path, 'add', '-A'])
+          await this.runCommand('git', [
+            '-C',
+            current.workspace_path,
+            '-c',
+            'user.name=Multi-Agent Studio',
+            '-c',
+            'user.email=multi-agent-studio@localhost',
+            'commit',
+            '-m',
+            `Complete task ${taskId}`,
+          ])
+        }
+      }
+      if (this.running.get(taskId) !== child) return
+      const latest = this.store.getTask(taskId)
+      if (!latest || latest.status !== 'running') return
+      this.running.delete(taskId)
+      this.store.updateTask(taskId, {
+        status: 'completed',
+        exit_code: 0,
+        finished_at: new Date().toISOString(),
+      })
+      this.publish(taskId, 'info', 'Task completed')
+      void this.schedule()
+    } catch (error) {
+      this.fail(
+        taskId,
+        error instanceof Error ? error.message : String(error),
+        null,
+        child,
+      )
+    }
   }
 
   private fail(
@@ -312,7 +389,7 @@ export class Orchestrator {
     this.running.delete(taskId)
     this.store.updateTask(taskId, {
       status: 'failed',
-      error: message,
+      error: current.error ? `${current.error}${message}\n` : message,
       exit_code: exitCode,
       finished_at: new Date().toISOString(),
     })

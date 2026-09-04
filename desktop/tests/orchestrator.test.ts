@@ -1,11 +1,39 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { Orchestrator } from '../src/orchestrator'
 import { StudioStore } from '../src/store'
 import type { StudioTask, TaskStatus } from '../src/types'
+
+const initializeRepository = (repoPath: string): void => {
+  mkdirSync(repoPath)
+  execFileSync('git', ['init', '-b', 'main'], { cwd: repoPath, stdio: 'ignore' })
+  writeFileSync(path.join(repoPath, 'README.md'), '# Fixture\n')
+  execFileSync('git', ['add', 'README.md'], { cwd: repoPath, stdio: 'ignore' })
+  execFileSync(
+    'git',
+    [
+      '-c',
+      'user.name=Multi-Agent Studio',
+      '-c',
+      'user.email=multi-agent-studio@localhost',
+      'commit',
+      '-m',
+      'Initialize fixture',
+    ],
+    { cwd: repoPath, stdio: 'ignore' },
+  )
+}
 
 const waitForStatus = async (
   store: StudioStore,
@@ -134,6 +162,178 @@ test('ignores stale process events after cancellation and requeue', async () => 
     await new Promise((resolve) => setTimeout(resolve, 700))
     assert.equal(store.getTask(task.id)?.status, 'completed')
     assert.doesNotMatch(store.getTask(task.id)?.error ?? '', /unknown/)
+  } finally {
+    orchestrator.stop()
+    store.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('propagates committed changes from multiple dependencies', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'agent-studio-'))
+  const repoPath = path.join(directory, 'repo')
+  initializeRepository(repoPath)
+  const store = new StudioStore(path.join(directory, 'test.db'))
+  const orchestrator = new Orchestrator(store, path.join(directory, 'worktrees'))
+  try {
+    const agent = store.createAgent({
+      name: 'Workspace Agent',
+      description: '',
+      executable: process.execPath,
+      arguments: [
+        '-e',
+        [
+          "const fs = require('node:fs')",
+          "const path = require('node:path')",
+          'const prompt = process.argv[1]',
+          'const workspace = process.argv[2]',
+          "if (prompt.includes('WRITE_ALPHA')) fs.writeFileSync(path.join(workspace, 'alpha.txt'), 'alpha')",
+          "if (prompt.includes('WRITE_BETA')) fs.writeFileSync(path.join(workspace, 'beta.txt'), 'beta')",
+          "if (prompt.includes('COMBINE')) {",
+          "  const alpha = fs.readFileSync(path.join(workspace, 'alpha.txt'), 'utf8')",
+          "  const beta = fs.readFileSync(path.join(workspace, 'beta.txt'), 'utf8')",
+          "  fs.writeFileSync(path.join(workspace, 'combined.txt'), `${alpha}+${beta}`)",
+          '}',
+        ].join(';'),
+        '{prompt}',
+        '{workspace}',
+      ],
+      capabilities: ['workspace'],
+      max_concurrency: 2,
+      enabled: true,
+    })
+    const project = store.createProject({
+      name: 'Workspace Project',
+      description: '',
+      repo_path: repoPath,
+      use_worktrees: true,
+    })
+    const alpha = store.createTask({
+      project_id: project.id,
+      title: 'Alpha',
+      prompt: 'WRITE_ALPHA',
+      required_capabilities: ['workspace'],
+      agent_id: agent.id,
+      depends_on: [],
+    })
+    const beta = store.createTask({
+      project_id: project.id,
+      title: 'Beta',
+      prompt: 'WRITE_BETA',
+      required_capabilities: ['workspace'],
+      agent_id: agent.id,
+      depends_on: [],
+    })
+    const combined = store.createTask({
+      project_id: project.id,
+      title: 'Combined',
+      prompt: 'COMBINE',
+      required_capabilities: ['workspace'],
+      agent_id: agent.id,
+      depends_on: [alpha.id, beta.id],
+    })
+
+    orchestrator.start()
+    orchestrator.queueProject(project.id)
+
+    await waitForStatus(store, alpha.id, 'completed')
+    await waitForStatus(store, beta.id, 'completed')
+    const result = await waitForStatus(store, combined.id, 'completed')
+    assert.equal(
+      readFileSync(path.join(result.workspace_path!, 'combined.txt'), 'utf8'),
+      'alpha+beta',
+    )
+  } finally {
+    orchestrator.stop()
+    store.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('does not launch an agent cancelled during workspace preparation', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'agent-studio-'))
+  const repoPath = path.join(directory, 'repo')
+  const launchedPath = path.join(directory, 'launched')
+  initializeRepository(repoPath)
+  const store = new StudioStore(path.join(directory, 'test.db'))
+  const orchestrator = new Orchestrator(store, path.join(directory, 'worktrees'))
+  try {
+    const agent = store.createAgent({
+      name: 'Launch Agent',
+      description: '',
+      executable: process.execPath,
+      arguments: [
+        '-e',
+        "require('node:fs').writeFileSync(process.argv[1], 'launched')",
+        launchedPath,
+      ],
+      capabilities: ['launch'],
+      max_concurrency: 1,
+      enabled: true,
+    })
+    const project = store.createProject({
+      name: 'Cancellation Project',
+      description: '',
+      repo_path: repoPath,
+      use_worktrees: true,
+    })
+    const task = store.createTask({
+      project_id: project.id,
+      title: 'Cancel',
+      prompt: 'Cancel during preparation',
+      required_capabilities: ['launch'],
+      agent_id: agent.id,
+      depends_on: [],
+    })
+
+    orchestrator.start()
+    orchestrator.queueTask(task.id)
+    orchestrator.cancelTask(task.id)
+    await new Promise((resolve) => setTimeout(resolve, 700))
+
+    assert.equal(store.getTask(task.id)?.status, 'cancelled')
+    assert.equal(existsSync(launchedPath), false)
+  } finally {
+    orchestrator.stop()
+    store.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('preserves stderr when an agent fails', async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'agent-studio-'))
+  const store = new StudioStore(path.join(directory, 'test.db'))
+  const orchestrator = new Orchestrator(store, path.join(directory, 'worktrees'))
+  try {
+    const agent = store.createAgent({
+      name: 'Failure Agent',
+      description: '',
+      executable: process.execPath,
+      arguments: ['-e', "console.error('ACTIONABLE_DETAIL'); process.exit(2)"],
+      capabilities: ['failure'],
+      max_concurrency: 1,
+      enabled: true,
+    })
+    const project = store.createProject({
+      name: 'Failure Project',
+      description: '',
+      repo_path: directory,
+      use_worktrees: false,
+    })
+    const task = store.createTask({
+      project_id: project.id,
+      title: 'Fail',
+      prompt: 'Fail with diagnostics',
+      required_capabilities: ['failure'],
+      agent_id: agent.id,
+      depends_on: [],
+    })
+
+    orchestrator.start()
+    orchestrator.queueTask(task.id)
+    const failed = await waitForStatus(store, task.id, 'failed')
+    assert.match(failed.error, /ACTIONABLE_DETAIL/)
+    assert.match(failed.error, /Agent exited with code 2/)
   } finally {
     orchestrator.stop()
     store.close()

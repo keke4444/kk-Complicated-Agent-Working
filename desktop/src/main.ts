@@ -110,7 +110,11 @@ void app.whenReady().then(() => {
     store,
     path.join(app.getPath('userData'), 'worktrees'),
   )
-  orchestrator.onEvent((event) => mainWindow?.webContents.send('studio:event', event))
+  orchestrator.onEvent((event) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('studio:event', event)
+    }
+  })
   orchestrator.start()
   registerIpc()
   createWindow()
